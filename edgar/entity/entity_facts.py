@@ -2185,25 +2185,132 @@ class EntityFacts:
 
     def _analyze_growth(self) -> Dict[str, Any]:
         """Analyze growth trends"""
-        # Get revenue time series
-        revenue_series = self.time_series('Revenue', periods=8)
-
-        if len(revenue_series) >= 2:
-            # Calculate year-over-year growth
-            latest = revenue_series.iloc[0]['numeric_value']
-            prior = revenue_series.iloc[1]['numeric_value']
-
-            if prior and prior != 0:
-                growth_rate = ((latest - prior) / prior) * 100
+        revenue_pair = self._latest_comparable_revenue_pair()
+        if revenue_pair:
+            latest, prior = revenue_pair
+            if prior.numeric_value and prior.numeric_value != 0:
+                growth_rate = ((latest.numeric_value - prior.numeric_value) / prior.numeric_value) * 100
                 return {
                     "revenue_growth_yoy": {
                         "value": round(growth_rate, 2),
                         "unit": "percent",
-                        "period_comparison": f"{revenue_series.iloc[0]['fiscal_period']} vs {revenue_series.iloc[1]['fiscal_period']}"
+                        "period_comparison": f"{self._period_label(latest)} vs {self._period_label(prior)}"
                     }
                 }
 
         return {"message": "Insufficient data for growth analysis"}
+
+    def _latest_comparable_revenue_pair(self) -> Optional[tuple[FinancialFact, FinancialFact]]:
+        """Return the latest revenue fact and a comparable prior-period fact."""
+        revenue_concepts = [
+            'RevenueFromContractWithCustomerExcludingAssessedTax',
+            'SalesRevenueNet',
+            'Revenues',
+            'Revenue',
+            'TotalRevenues',
+            'NetSales'
+        ]
+        pairs: List[tuple[int, FinancialFact, FinancialFact]] = []
+        for priority, concept in enumerate(revenue_concepts):
+            concept_facts = [
+                fact for fact in self._facts
+                if self._local_concept_name(fact.concept) == concept
+                and fact.numeric_value is not None
+                and fact.period_type == 'duration'
+                and fact.period_start is not None
+                and fact.period_end is not None
+            ]
+            pair = self._latest_comparable_duration_pair(concept_facts)
+            if pair:
+                latest, prior = pair
+                pairs.append((priority, latest, prior))
+        if not pairs:
+            return None
+        _, latest, prior = max(
+            pairs,
+            key=lambda item: (
+                item[1].period_end or date.min,
+                item[1].filing_date or date.min,
+                -item[0]
+            )
+        )
+        return latest, prior
+
+    @staticmethod
+    def _latest_comparable_duration_pair(
+        facts: List[FinancialFact],
+    ) -> Optional[tuple[FinancialFact, FinancialFact]]:
+        deduped = EntityFacts._deduplicate_duration_facts(facts)
+        candidates = sorted(
+            deduped,
+            key=lambda fact: (fact.period_end or date.min, fact.filing_date or date.min),
+            reverse=True
+        )
+        for latest in candidates:
+            latest_kind = EntityFacts._duration_kind(latest)
+            if latest_kind is None:
+                continue
+            priors = [
+                fact for fact in candidates
+                if fact.period_end < latest.period_end
+                and EntityFacts._duration_kind(fact) == latest_kind
+                and EntityFacts._is_comparable_prior_period(latest, fact, latest_kind)
+            ]
+            if priors:
+                prior = max(priors, key=lambda fact: (fact.period_end or date.min, fact.filing_date or date.min))
+                return latest, prior
+        return None
+
+    @staticmethod
+    def _deduplicate_duration_facts(facts: List[FinancialFact]) -> List[FinancialFact]:
+        grouped: Dict[tuple, List[FinancialFact]] = defaultdict(list)
+        for fact in facts:
+            grouped[(fact.concept, fact.period_start, fact.period_end)].append(fact)
+
+        deduped = []
+        for group_facts in grouped.values():
+            deduped.append(
+                sorted(
+                    group_facts,
+                    key=lambda fact: (
+                        fact.filing_date or date.min,
+                        1 if fact.form_type == '10-K' else 0,
+                        0 if '/A' in fact.form_type else 1
+                    ),
+                    reverse=True
+                )[0]
+            )
+        return deduped
+
+    @staticmethod
+    def _duration_kind(fact: FinancialFact) -> Optional[str]:
+        if fact.period_start is None or fact.period_end is None:
+            return None
+        duration_days = (fact.period_end - fact.period_start).days
+        if fact.fiscal_period == 'FY' or 330 <= duration_days <= 380:
+            return 'annual'
+        if fact.fiscal_period in {'Q1', 'Q2', 'Q3', 'Q4'} and 75 <= duration_days <= 100:
+            return 'quarterly'
+        return None
+
+    @staticmethod
+    def _is_comparable_prior_period(latest: FinancialFact, prior: FinancialFact, duration_kind: str) -> bool:
+        days_between_period_ends = (latest.period_end - prior.period_end).days
+        if not 320 <= days_between_period_ends <= 410:
+            return False
+        if duration_kind == 'quarterly':
+            return latest.fiscal_period == prior.fiscal_period
+        return duration_kind == 'annual'
+
+    @staticmethod
+    def _local_concept_name(concept: str) -> str:
+        return concept.split(':', 1)[-1]
+
+    @staticmethod
+    def _period_label(fact: FinancialFact) -> str:
+        if fact.fiscal_period:
+            return f"{fact.fiscal_period} ended {fact.period_end}"
+        return f"period ended {fact.period_end}"
 
     def _analyze_liquidity(self) -> Dict[str, Any]:
         """Analyze liquidity metrics"""
