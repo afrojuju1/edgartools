@@ -38,7 +38,7 @@ class TOCAnalyzer:
     def __init__(self):
         # SEC section patterns for normalization
         self.section_patterns = [
-            (r'(?:item|part)\s+\d+[a-z]?', 'item'),
+            (r'(?:items?|part)\s+\d+[a-z]?', 'item'),
             (r'business', 'item'),
             (r'risk\s+factors?', 'item'),
             (r'properties', 'item'),
@@ -241,6 +241,7 @@ class TOCAnalyzer:
 
         Handles formats like:
         - "Item 1." / "ITEM 1A." / "Item 1A. Risk Factors"
+        - "Items 1. and 2. Business and Properties"
         - "Part I" / "PART II."
 
         Returns:
@@ -249,6 +250,17 @@ class TOCAnalyzer:
         text = text.strip()
         # Strip zero-width spaces
         text = text.replace('\u200b', '').replace('\u200c', '').replace('\u200d', '')
+
+        combined_items_match = re.match(
+            r'(?:items?|ITEMS?)\s+(\d+[A-Za-z]?)\.?\s*(?:,?\s*(?:and|&)\s*)'
+            r'(\d+[A-Za-z]?)\.?',
+            text,
+            re.IGNORECASE,
+        )
+        if combined_items_match:
+            first = combined_items_match.group(1).upper()
+            second = combined_items_match.group(2).upper()
+            return f"Items {first} and {second}"
 
         item_match = re.match(r'(?:item|ITEM)\s+(\d+[A-Za-z]?)', text, re.IGNORECASE)
         if item_match:
@@ -364,10 +376,17 @@ class TOCAnalyzer:
             Key like "part_i_item_1a" or "Item 1A"
         """
         if current_part:
-            part_key = current_part.lower().replace(' ', '_')
-            item_key = item_name.lower().replace(' ', '_')
+            part_key = TOCAnalyzer._section_name_to_key(current_part)
+            item_key = TOCAnalyzer._section_name_to_key(item_name)
             return f"{part_key}_{item_key}"
+        if item_name.lower().startswith('items '):
+            return TOCAnalyzer._section_name_to_key(item_name)
         return item_name
+
+    @staticmethod
+    def _section_name_to_key(section_name: str) -> str:
+        """Convert a display section name to a stable section key."""
+        return re.sub(r'[^a-z0-9]+', '_', section_name.lower()).strip('_')
 
     @staticmethod
     def _ensure_tree(html_content: str, tree=None):
@@ -955,6 +974,16 @@ class TOCAnalyzer:
                 return f"Part {part_num}"
 
         # THIRD PRIORITY: Text-based normalization
+        combined_items_match = re.match(
+            r'items?\s+(\d+[a-z]?)\.?\s*(?:,?\s*(?:and|&)\s*)(\d+[a-z]?)\.?',
+            text,
+            re.IGNORECASE,
+        )
+        if combined_items_match:
+            first = combined_items_match.group(1).upper()
+            second = combined_items_match.group(2).upper()
+            return f"Items {first} and {second}"
+
         # Handle common Item patterns in text
         item_match = re.match(r'item\s+(\d+[a-z]?)', text, re.IGNORECASE)
         if item_match:
@@ -987,6 +1016,15 @@ class TOCAnalyzer:
     def _get_section_type_and_order(self, text: str) -> Tuple[str, int]:
         """Get section type and order for sorting."""
         text_lower = text.lower()
+
+        combined_match = re.search(r'items?[\s_]*(\d+)([a-z]?)[\s_]*(?:and|&)[\s_]*(\d+)([a-z]?)', text_lower)
+        if combined_match:
+            first_num = int(combined_match.group(1))
+            first_letter = combined_match.group(2) or ''
+            order = first_num * 1000 + (
+                ord(first_letter.upper()) - ord('A') + 1 if first_letter else 0
+            )
+            return 'item', order
 
         # Part-aware section names (e.g., part_i_item_1, part_ii_item_1a)
         # These names are generated for 10-Q filings to distinguish Part I and Part II items

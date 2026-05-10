@@ -363,6 +363,23 @@ class Section:
             item_num = part_item_match.group(2).upper()
             return (part_roman, item_num)
 
+        # Match combined-item formats:
+        # - "part_i_items_1_and_2"
+        # - "items_1_and_2"
+        combined_part_match = re.match(
+            r'part[\s_]+([ivx]+)[\s_]+items[\s_]+(\d+[a-z]?)[\s_]+(?:and|to|through)[\s_]+(\d+[a-z]?)\b',
+            section_lower,
+        )
+        if combined_part_match:
+            return (combined_part_match.group(1).upper(), combined_part_match.group(2).upper())
+
+        combined_item_match = re.match(
+            r'items[\s_]+(\d+[a-z]?)[\s_]+(?:and|to|through)[\s_]+(\d+[a-z]?)\b',
+            section_lower,
+        )
+        if combined_item_match:
+            return (None, combined_item_match.group(1).upper())
+
         # Match item-only formats:
         # - "item_1", "item_1a", "item_7"
         # - "Item 1", "Item 1A", "Item 7A"
@@ -501,8 +518,29 @@ class Sections(Dict[str, Section]):
                 elif section.part and section.part.upper() == part_clean:
                     # Part matches
                     return section
+            if self._combined_item_matches(name, item_clean, part_clean):
+                return section
 
         return None
+
+    @staticmethod
+    def _combined_item_matches(section_name: str, item: str, part: Optional[str]) -> bool:
+        """Return True when a combined item key contains the requested item."""
+        section_lower = section_name.lower()
+        combined_match = re.search(
+            r'(?:^|_)items_(\d+[a-z]?)(?:_and_|_to_|_through_)(\d+[a-z]?)(?:_|$)',
+            section_lower,
+        )
+        if not combined_match:
+            return False
+
+        if part:
+            part_clean = part.lower()
+            if not section_lower.startswith(f"part_{part_clean}_"):
+                return False
+
+        requested = item.lower()
+        return requested in {combined_match.group(1), combined_match.group(2)}
 
     def get_part(self, part: str) -> Dict[str, Section]:
         """

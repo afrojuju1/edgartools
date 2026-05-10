@@ -586,7 +586,9 @@ class TenK(CompanyReport):
                 # Some filings (energy, MLP, REIT) combine items under a single heading.
                 # Match whether the item is the first or second number: items_1_and_2 or items_2_and_3
                 inum = re.escape(item_num)
-                combined_pattern = re.compile(rf'part_[iv]+_items_(?:{inum}_and_\d+|\d+_and_{inum})')
+                combined_pattern = re.compile(
+                    rf'(?:part_[iv]+_)?items_(?:{inum}_and_\d+|\d+_and_{inum})'
+                )
                 for key in self.sections:
                     if combined_pattern.match(key):
                         text = self.sections[key].text()
